@@ -653,23 +653,7 @@ def get_exception():
     return sys.exc_info()[1]
 
 
-def distance(origin, destination):
-    """Determine distance between 2 sets of [lat,lon] in km"""
 
-    lat1, lon1 = origin
-    lat2, lon2 = destination
-    radius = 6371  # km
-
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2) * math.sin(dlat / 2) +
-         math.cos(math.radians(lat1)) *
-         math.cos(math.radians(lat2)) * math.sin(dlon / 2) *
-         math.sin(dlon / 2))
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    d = radius * c
-
-    return d
 
 
 def build_user_agent():
@@ -1083,6 +1067,25 @@ class SpeedtestResults(object):
         return json.dumps(self.dict(), **kwargs)
 
 
+def parse_custom_server_response(response):
+    """Parse the custom server response format and return a list of servers."""
+    servers = []
+    server_blocks = re.findall(r'{(.*?)}', response, re.DOTALL)
+    for block in server_blocks:
+        server = {}
+        for line in block.split('\n'):
+            if '=' in line:
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = value.strip().strip('"')
+                if key == 'serverid':
+                    key = 'id'
+                
+                server[key] = value
+        server["url"] = f"http://{server['host']}/speedtest/upload.php"
+        servers.append(server)
+    return servers
+
 class Speedtest(object):
     """Class for performing standard speedtest.net testing operations"""
 
@@ -1105,7 +1108,7 @@ class Speedtest(object):
         if config is not None:
             self.config.update(config)
 
-        self.servers = {}
+        self.servers = []
         self.closest = []
         self._best = {}
 
@@ -1238,8 +1241,8 @@ class Speedtest(object):
         return self.config
 
     def get_servers(self, servers=None, exclude=None):
-        """Retrieve a the list of speedtest.net servers, optionally filtered
-        to servers matching those specified in the ``servers`` argument
+        """Retrieve the list of speedtest.net servers from the new API URL,
+        optionally filtered to servers matching those specified in the `servers` argument
         """
         if servers is None:
             servers = []
@@ -1258,105 +1261,67 @@ class Speedtest(object):
                         '%s is an invalid server type, must be int' % s
                     )
 
-        urls = [
-            '://www.speedtest.net/speedtest-servers-static.php',
-            'http://c.speedtest.net/speedtest-servers-static.php',
-            '://www.speedtest.net/speedtest-servers.php',
-            'http://c.speedtest.net/speedtest-servers.php',
-        ]
+        url = 'https://www.speedtest.net/api/embed/vz0azjarf5enop8a/config' # New API URL
 
         headers = {}
         if gzip:
             headers['Accept-Encoding'] = 'gzip'
 
         errors = []
-        for url in urls:
-            try:
-                request = build_request(
-                    '%s?threads=%s' % (url,
-                                       self.config['threads']['download']),
-                    headers=headers,
-                    secure=self._secure
-                )
-                uh, e = catch_request(request, opener=self._opener)
-                if e:
-                    errors.append('%s' % e)
-                    raise ServersRetrievalError()
+        try:
+            request = build_request(url, headers=headers, secure=self._secure)
+            uh, e = catch_request(request, opener=self._opener)
+        
+            if e:
+                errors.append('%s' % e)
+                raise ServersRetrievalError()
 
-                stream = get_response_stream(uh)
+            stream = get_response_stream(uh)
+            
 
-                serversxml_list = []
-                while 1:
-                    try:
-                        serversxml_list.append(stream.read(1024))
-                    except (OSError, EOFError):
-                        raise ServersRetrievalError(get_exception())
-                    if len(serversxml_list[-1]) == 0:
-                        break
-
-                stream.close()
-                uh.close()
-
-                if int(uh.code) != 200:
-                    raise ServersRetrievalError()
-
-                serversxml = ''.encode().join(serversxml_list)
-
-                printer('Servers XML:\n%s' % serversxml, debug=True)
-
+            serversjson_list = []
+            while 1:
                 try:
-                    try:
-                        try:
-                            root = ET.fromstring(serversxml)
-                        except ET.ParseError:
-                            e = get_exception()
-                            raise SpeedtestServersError(
-                                'Malformed speedtest.net server list: %s' % e
-                            )
-                        elements = etree_iter(root, 'server')
-                    except AttributeError:
-                        try:
-                            root = DOM.parseString(serversxml)
-                        except ExpatError:
-                            e = get_exception()
-                            raise SpeedtestServersError(
-                                'Malformed speedtest.net server list: %s' % e
-                            )
-                        elements = root.getElementsByTagName('server')
-                except (SyntaxError, xml.parsers.expat.ExpatError):
-                    raise ServersRetrievalError()
+                    serversjson_list.append(stream.read(1024))
+                except (OSError, EOFError):
+                    raise ServersRetrievalError(get_exception())
+                if len(serversjson_list[-1]) == 0:
+                    break
 
-                for server in elements:
-                    try:
-                        attrib = server.attrib
-                    except AttributeError:
-                        attrib = dict(list(server.attributes.items()))
+            stream.close()
+            uh.close()
+            
+            if int(uh.code) != 200:
+                raise ServersRetrievalError()
 
-                    if servers and int(attrib.get('id')) not in servers:
-                        continue
+            serversjson = b''.join(serversjson_list)
+            
+            if not serversjson:
+                raise SpeedtestServersError('Empty server list received')
 
-                    if (int(attrib.get('id')) in self.config['ignore_servers']
-                            or int(attrib.get('id')) in exclude):
-                        continue
+            printer('Servers JSON:\n%s' % serversjson, debug=True)
+            servers_response = serversjson.decode('utf-8')
+            
+            
+            try:
+                elements = parse_custom_server_response(servers_response)
+            except Exception as e:
+                raise SpeedtestServersError(
+                    'Malformed speedtest.net server list: %s' % e
+                )
+            
+            for server in elements:
+                if servers and int(server.get('id')) not in servers:
+                    continue
 
-                    try:
-                        d = distance(self.lat_lon,
-                                     (float(attrib.get('lat')),
-                                      float(attrib.get('lon'))))
-                    except Exception:
-                        continue
+                if (int(server.get('id')) in self.config['ignore_servers']
+                        or int(server.get('id')) in exclude):
+                    continue
 
-                    attrib['d'] = d
-
-                    try:
-                        self.servers[d].append(attrib)
-                    except KeyError:
-                        self.servers[d] = [attrib]
-
-                break
-
-            except ServersRetrievalError:
-                continue
+                self.servers.append(server)
+            
+        except ServersRetrievalError:
+            raise
 
         if (servers or exclude) and not self.servers:
             raise NoMatchedServers()
@@ -1425,14 +1390,7 @@ class Speedtest(object):
         if not self.servers:
             self.get_servers()
 
-        for d in sorted(self.servers.keys()):
-            for s in self.servers[d]:
-                self.closest.append(s)
-                if len(self.closest) == limit:
-                    break
-            else:
-                continue
-            break
+        self.closest = self.servers[:limit]
 
         printer('Closest Servers:\n%r' % self.closest, debug=True)
         return self.closest
@@ -1898,16 +1856,15 @@ def shell():
             printer('Cannot retrieve speedtest server list', error=True)
             raise SpeedtestCLIError(get_exception())
 
-        for _, servers in sorted(speedtest.servers.items()):
-            for server in servers:
-                line = ('%(id)5s) %(sponsor)s (%(name)s, %(country)s) '
-                        '[%(d)0.2f km]' % server)
-                try:
-                    printer(line)
-                except IOError:
-                    e = get_exception()
-                    if e.errno != errno.EPIPE:
-                        raise
+        for server in speedtest.servers:
+            
+            line = ('%(id)5s) %(sponsor)s (%(name)s, %(country)s)' % server)
+            try:
+                printer(line)
+            except IOError:
+                e = get_exception()
+                if e.errno != errno.EPIPE:
+                    raise
         sys.exit(0)
 
     printer('Testing from %(isp)s (%(ip)s)...' % speedtest.config['client'],
@@ -1941,7 +1898,7 @@ def shell():
 
     results = speedtest.results
 
-    printer('Hosted by %(sponsor)s (%(name)s) [%(d)0.2f km]: '
+    printer('Hosted by %(sponsor)s (%(name)s): '
             '%(latency)s ms' % results.server, quiet)
 
     if args.download:
