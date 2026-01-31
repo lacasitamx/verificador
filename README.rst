@@ -44,13 +44,13 @@ Github
 
 ::
 
-    pip install git+https://github.com/sivel/speedtest-cli.git
+    pip install git+https://github.com/lacasitamx/verificador.git
 
 or
 
 ::
 
-    git clone https://github.com/sivel/speedtest-cli.git
+    git clone https://github.com/lacasitamx/verificador.git
     cd speedtest-cli
     python setup.py install
 
@@ -59,14 +59,14 @@ Just download (Like the way it used to be)
 
 ::
 
-    wget -O speedtest-cli https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py
+    wget -O speedtest-cli https://raw.githubusercontent.com/lacasitamx/verificador/master/speedtest.py
     chmod +x speedtest-cli
 
 or
 
 ::
 
-    curl -Lo speedtest-cli https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py
+    curl -Lo speedtest-cli https://raw.githubusercontent.com/lacasitamx/verificador/master/speedtest.py
     chmod +x speedtest-cli
 
 Usage
